@@ -1,5 +1,5 @@
 {
-  "name": "Prueba 0.2 · caras y salto",
+  "name": "Isla de pruebas",
   "cells": [
     [
       16,
@@ -51,5 +51,34 @@
       9,
       16
     ]
+  ],
+  "time_limit": 90,
+  "objects": [
+    {
+      "kind": "key",
+      "cell": [
+        16,
+        13,
+        16
+      ],
+      "normal": [
+        0,
+        0,
+        -1
+      ]
+    },
+    {
+      "kind": "portal",
+      "cell": [
+        19,
+        9,
+        16
+      ],
+      "normal": [
+        0,
+        0,
+        -1
+      ]
+    }
   ]
 }

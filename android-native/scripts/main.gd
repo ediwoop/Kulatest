@@ -1,6 +1,7 @@
 extends Node3D
 ## Original prototype geometry and implementation; no original game assets.
 const LevelLoader = preload("res://scripts/level_loader.gd")
+const RunState = preload("res://scripts/run_state.gd")
 const FollowCamera = preload("res://scripts/follow_camera.gd")
 const TURN_TIME := 19.0 / 60.0
 const LEVEL_PATH := "res://levels/test_level.json"
@@ -30,6 +31,23 @@ var pitch_slider: HSlider
 var fov_slider: HSlider
 var settings_status: Label
 var test_mode := false
+var run = RunState.new()
+var objective_nodes: Dictionary = {}
+var portal_material: StandardMaterial3D
+var portal_label: Label3D
+var hud: Label
+var hint: Label
+var hint_remaining := 0.0
+var result_overlay: ColorRect
+var result_title: Label
+var result_details: Label
+var replay_button: Button
+var move_held := false
+var pending_turn := 0
+var pending_jump := false
+var app_active := true
+var visual_clock := 0.0
+var record_seconds := -1.0
 
 func _ready() -> void:
     test_mode = "--self-test" in OS.get_cmdline_user_args() or "--visual-test" in OS.get_cmdline_user_args()
@@ -49,6 +67,35 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
     _update_camera(delta)
+    visual_clock += delta
+    for id in objective_nodes:
+        var node: Node3D = objective_nodes[id]
+        if node.has_meta("key"):
+            node.rotation.y = visual_clock * 1.4
+            node.position.y = sin(visual_clock * 2.4) * 0.035
+    var was_paused: bool = run.paused
+    run.paused = not app_active or (is_instance_valid(settings_panel) and settings_panel.visible)
+    if was_paused and not run.paused and not busy:
+        _visit_surface()
+    if run.tick(delta):
+        _show_result()
+    hint_remaining = maxf(0.0, hint_remaining - delta)
+    if hint_remaining == 0.0 and is_instance_valid(hint):
+        hint.text = "Mantén Avanzar · salta el hueco · recoge la llave y entra al portal"
+    _refresh_hud()
+    if is_instance_valid(replay_button):
+        replay_button.disabled = busy
+    if not _can_move():
+        return
+    if pending_jump:
+        pending_jump = false
+        _jump()
+    elif pending_turn != 0:
+        var direction := pending_turn
+        pending_turn = 0
+        _turn(direction)
+    elif move_held:
+        _advance()
 
 func _make_environment() -> void:
     var light := DirectionalLight3D.new()
@@ -89,6 +136,9 @@ func _load_level() -> void:
             start_facing = direction
             break
     level_name = str(result["name"])
+    run.configure(result.get("objects", []), result.get("time_limit", 90.0))
+    _make_objectives()
+    _load_record()
     ready_to_play = true
     _restart()
 
@@ -119,22 +169,23 @@ func _unhandled_key_input(event: InputEvent) -> void:
     if event.is_action_pressed("ui_up"):
         _advance()
     elif event.is_action_pressed("ui_left"):
-        _turn(-1)
+        _request_turn(-1)
     elif event.is_action_pressed("ui_right"):
-        _turn(1)
+        _request_turn(1)
     elif event.is_action_pressed("ui_accept"):
-        _jump()
+        _request_jump()
 
 func _surface_position(at: Vector3i, up: Vector3i) -> Vector3:
     return Vector3(at) + Vector3(up) * BALL_OFFSET
 
 func _advance() -> void:
-    if busy or not ready_to_play:
+    if not _can_move():
         return
     var next := cell + facing
     # A face is walkable only when the space above it is clear.
     if occupied.has(next + normal):
-        status.text = "Pared delante · gira para continuar"
+        move_held = false
+        _say("Pared delante · gira para continuar")
         return
     busy = true
     var old_normal := normal
@@ -154,7 +205,7 @@ func _advance() -> void:
     camera_anchor = ball.position
     view_frame = _frame(normal, facing)
     busy = false
-    status.text = level_name + " · salto: 2 cubos · reiniciar: R"
+    _visit_surface()
 
 func _roll_linear(t: float, origin: Vector3, destination: Vector3, up: Vector3i, forward: Vector3i) -> void:
     ball.position = origin.lerp(destination, t)
@@ -180,7 +231,7 @@ func _roll_edge(t: float, at: Vector3i, up: Vector3i, forward: Vector3i) -> void
     ball_mesh.basis = Basis(n.cross(f).normalized(), t * 5.8)
 
 func _turn(direction: int) -> void:
-    if busy or not ready_to_play:
+    if not _can_move():
         return
     busy = true
     var source := view_frame
@@ -196,12 +247,12 @@ func _turn_camera(t: float, source: Basis, destination: Basis) -> void:
     view_frame = source.slerp(destination, t).orthonormalized()
 
 func _jump() -> void:
-    if busy or not ready_to_play:
+    if not _can_move():
         return
     # Conservative clearance: do not jump through a cube in the flight corridor.
     for step in range(3):
         if occupied.has(cell + facing * step + normal) or occupied.has(cell + facing * step + normal * 2):
-            status.text = "Salto bloqueado por un cubo"
+            _say("Salto bloqueado por un cubo")
             return
     busy = true
     var landing := cell + facing * 2
@@ -212,18 +263,26 @@ func _jump() -> void:
     var tween := create_tween()
     tween.tween_method(_jump_frame.bind(origin, destination, up, forward), 0.0, 1.0, JUMP_TIME)
     await tween.finished
+    if run.enabled and run.state != RunState.State.RUNNING:
+        busy = false
+        return
     if occupied.has(landing):
         cell = landing
         ball.position = destination
-        status.text = "Salto completado"
+        _say("Salto completado")
         busy = false
+        _visit_surface()
     else:
-        status.text = "Caída · vuelves al inicio"
+        _say("Caída · vuelves al inicio")
+        move_held = false
+        pending_turn = 0
+        pending_jump = false
         var fall := create_tween()
         fall.tween_property(ball, "position", destination - Vector3(up) * 5.0, 0.45).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
         await fall.finished
         busy = false
-        _restart()
+        if not run.enabled or run.state == RunState.State.RUNNING:
+            _restart()
 
 func _jump_frame(t: float, origin: Vector3, destination: Vector3, up: Vector3i, forward: Vector3i) -> void:
     _roll_linear(t, origin, destination, up, forward)
@@ -232,6 +291,18 @@ func _jump_frame(t: float, origin: Vector3, destination: Vector3, up: Vector3i, 
 func _restart() -> void:
     if busy or not ready_to_play:
         return
+    move_held = false
+    pending_turn = 0
+    pending_jump = false
+    run.reset()
+    if is_instance_valid(result_overlay):
+        result_overlay.hide()
+    if is_instance_valid(settings_panel):
+        settings_panel.hide()
+    for object in run.objects:
+        if objective_nodes.has(object["id"]):
+            objective_nodes[object["id"]].show()
+    _update_portal()
     cell = start_cell
     facing = start_facing
     normal = Vector3i.UP
@@ -242,7 +313,9 @@ func _restart() -> void:
     follow_camera.look_amount = 0.0
     look_held = false
     _update_camera(0.0)
-    status.text = level_name + " · avanza hasta un borde o salta el hueco"
+    status.text = level_name
+    _say("Recoge la llave dorada y alcanza el portal")
+    _refresh_hud()
 
 func _input(event: InputEvent) -> void:
     if event is InputEventKey and event.pressed and event.keycode == KEY_R:
@@ -259,6 +332,16 @@ func _make_ui() -> void:
     status.position = Vector2(24, 24)
     status.add_theme_font_size_override("font_size", 22)
     root.add_child(status)
+    hud = Label.new()
+    hud.position = Vector2(24, 62)
+    hud.add_theme_font_size_override("font_size", 24)
+    root.add_child(hud)
+    hint = Label.new()
+    hint.position = Vector2(24, 103)
+    hint.add_theme_font_size_override("font_size", 19)
+    hint.size.x = 790
+    hint.clip_text = true
+    root.add_child(hint)
     _make_camera_ui(root)
     var bar := HBoxContainer.new()
     root.add_child(bar)
@@ -267,22 +350,29 @@ func _make_ui() -> void:
     bar.offset_bottom = -24
     bar.alignment = BoxContainer.ALIGNMENT_CENTER
     bar.add_theme_constant_override("separation", 14)
-    _add_button(bar, "Izquierda", _turn.bind(-1))
-    _add_button(bar, "Avanzar", _advance)
-    _add_button(bar, "Derecha", _turn.bind(1))
-    _add_button(bar, "Saltar", _jump)
+    _add_button(bar, "Izquierda", _request_turn.bind(-1))
+    var advance_button := _add_button(bar, "Avanzar", Callable())
+    advance_button.button_down.connect(_set_move_held.bind(true))
+    advance_button.button_up.connect(_set_move_held.bind(false))
+    _add_button(bar, "Derecha", _request_turn.bind(1))
+    _add_button(bar, "Saltar", _request_jump)
     _add_button(bar, "Reiniciar", _restart)
+    _make_result_ui(root)
 
-func _add_button(bar: HBoxContainer, title: String, action: Callable) -> void:
+func _add_button(bar: HBoxContainer, title: String, action: Callable) -> Button:
     var button := Button.new()
     button.text = title
     button.custom_minimum_size = Vector2(160, 86)
     button.add_theme_font_size_override("font_size", 23)
-    button.pressed.connect(action)
+    if action.is_valid():
+        button.pressed.connect(action)
     bar.add_child(button)
+    return button
 
 func _run_self_test() -> void:
     var failures: Array[String] = []
+    var authored_cells := occupied.duplicate()
+    run.enabled = false
     var faces: Array[Vector3i] = [Vector3i.UP, Vector3i.DOWN, Vector3i.LEFT, Vector3i.RIGHT, Vector3i.FORWARD, Vector3i.BACK]
     for up in faces:
         var forward := Vector3i.FORWARD if abs(up.y) == 1 else Vector3i.UP
@@ -335,6 +425,12 @@ func _run_self_test() -> void:
         failures.append("Busy input guard")
     if failures.is_empty():
         _test_camera(failures)
+        _test_gameplay_state(failures)
+        busy = false
+        occupied = authored_cells
+        run.enabled = true
+        await _test_controls(failures)
+        await _run_route_test(failures)
     if failures.is_empty():
         print("SELF-TEST PASS: movement and edge transitions on 6 faces, turning, jump, fall/reset, wall, clearance and input guard")
         get_tree().quit(0)
@@ -429,7 +525,7 @@ func _make_camera_ui(root: Control) -> void:
     zoom_slider.value_changed.connect(_camera_values_changed)
     pitch_slider.value_changed.connect(_camera_values_changed)
     fov_slider.value_changed.connect(_camera_values_changed)
-    settings_button.pressed.connect(func(): settings_panel.visible = not settings_panel.visible)
+    settings_button.pressed.connect(_toggle_camera_settings)
     settings_panel.hide()
     _camera_values_changed(0.0)
 
@@ -462,8 +558,14 @@ func _camera_preset(zoom: float) -> void:
 
 func _notification(what: int) -> void:
     if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+        app_active = false
         look_held = false
+        move_held = false
+        pending_turn = 0
+        pending_jump = false
         _save_camera_settings()
+    elif what == NOTIFICATION_APPLICATION_FOCUS_IN:
+        app_active = true
 
 func _test_camera(failures: Array[String]) -> void:
     var rig = FollowCamera.new()
@@ -539,6 +641,7 @@ func _run_visual_test() -> void:
     await get_tree().create_timer(JUMP_TIME * 0.5).timeout
     await _capture("camera-jump")
     await get_tree().create_timer(JUMP_TIME).timeout
+    await _capture("camera-key-collected")
     await _turn(1)
     await _capture("camera-turn")
     await _advance()
@@ -549,5 +652,311 @@ func _run_visual_test() -> void:
     await get_tree().create_timer(0.4).timeout
     await _capture("camera-look-down")
     look_held = false
+    var failures: Array[String] = []
+    await _run_route_test(failures)
+    if not failures.is_empty():
+        push_error(str(failures))
+        get_tree().quit(1)
+        return
+    await _capture("camera-level-complete")
     print("VISUAL TEST PASS")
     get_tree().quit(0)
+
+
+func _can_move() -> bool:
+    return ready_to_play and not busy and app_active and (not run.enabled or (run.state == RunState.State.RUNNING and not run.paused))
+
+func _set_move_held(held: bool) -> void:
+    move_held = held and app_active and ready_to_play and run.state == RunState.State.RUNNING and not run.paused
+    if move_held and _can_move():
+        _advance()
+
+func _request_turn(direction: int) -> void:
+    if not ready_to_play or not app_active or run.paused or run.state != RunState.State.RUNNING:
+        return
+    if busy:
+        pending_turn = direction
+    else:
+        _turn(direction)
+
+func _request_jump() -> void:
+    if not ready_to_play or not app_active or run.paused or run.state != RunState.State.RUNNING:
+        return
+    if busy:
+        pending_jump = true
+    else:
+        _jump()
+
+func _toggle_camera_settings() -> void:
+    settings_panel.visible = not settings_panel.visible
+    run.paused = settings_panel.visible or not app_active
+    move_held = false
+    pending_turn = 0
+    pending_jump = false
+
+func _say(message: String) -> void:
+    if is_instance_valid(hint):
+        hint.text = message
+        hint_remaining = 3.0
+
+func _refresh_hud() -> void:
+    if not is_instance_valid(hud):
+        return
+    var pause_text := " · PAUSA" if run.paused else ""
+    hud.text = "Llaves %d/%d  ·  Tiempo %.1f s%s" % [run.collected.size(), run.required_keys, run.remaining, pause_text]
+    hud.modulate = Color(1.0, 0.43, 0.35) if run.remaining < 15.0 else Color(0.85, 0.94, 1.0)
+
+func _visit_surface() -> void:
+    var event: String = run.visit(cell, normal)
+    if event == "key":
+        for object in run.objects:
+            if object["kind"] == "key" and run.collected.has(object["id"]) and objective_nodes.has(object["id"]):
+                objective_nodes[object["id"]].hide()
+        _update_portal()
+        _say("Llave recogida · el portal está abierto")
+    elif event == "locked":
+        _say("Portal cerrado · necesitas la llave")
+    elif event == "win":
+        _show_result()
+    _refresh_hud()
+
+func _mesh(parent: Node3D, shape: Mesh, material: Material, at: Vector3 = Vector3.ZERO) -> MeshInstance3D:
+    var instance := MeshInstance3D.new()
+    instance.mesh = shape
+    instance.material_override = material
+    instance.position = at
+    parent.add_child(instance)
+    return instance
+
+func _make_objectives() -> void:
+    for object in run.objects:
+        var root := Node3D.new()
+        root.position = Vector3(object["cell"]) + Vector3(object["normal"]) * 0.88
+        var up: Vector3i = object["normal"]
+        var ahead := Vector3i.FORWARD if abs(up.y) == 1 else Vector3i.UP
+        root.basis = _frame(up, ahead)
+        add_child(root)
+        var model := Node3D.new()
+        root.add_child(model)
+        objective_nodes[object["id"]] = model
+        if object["kind"] == "key":
+            model.set_meta("key", true)
+            var gold := StandardMaterial3D.new()
+            gold.albedo_color = Color(1.0, 0.72, 0.10)
+            gold.metallic = 0.5
+            gold.roughness = 0.3
+            gold.emission_enabled = true
+            gold.emission = Color(0.6, 0.26, 0.01)
+            var ring := TorusMesh.new()
+            ring.inner_radius = 0.065
+            ring.outer_radius = 0.11
+            _mesh(model, ring, gold, Vector3(0, 0.12, 0)).rotation.x = PI * 0.5
+            var shaft := CylinderMesh.new()
+            shaft.top_radius = 0.024
+            shaft.bottom_radius = 0.024
+            shaft.height = 0.25
+            _mesh(model, shaft, gold, Vector3(0, -0.07, 0))
+            for y in [-0.12, -0.18]:
+                var tooth := BoxMesh.new()
+                tooth.size = Vector3(0.09, 0.035, 0.045)
+                _mesh(model, tooth, gold, Vector3(0.025, y, 0))
+        else:
+            portal_material = StandardMaterial3D.new()
+            portal_material.emission_enabled = true
+            portal_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+            var arch := TorusMesh.new()
+            arch.inner_radius = 0.28
+            arch.outer_radius = 0.35
+            _mesh(model, arch, portal_material).rotation.x = PI * 0.5
+            portal_label = Label3D.new()
+            portal_label.position = Vector3(0, 0.48, 0)
+            portal_label.font_size = 36
+            portal_label.pixel_size = 0.004
+            portal_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+            model.add_child(portal_label)
+    _update_portal()
+
+func _update_portal() -> void:
+    if not is_instance_valid(portal_material):
+        return
+    var unlocked: bool = run.collected.size() >= run.required_keys
+    var color := Color(0.2, 0.95, 0.8) if unlocked else Color(0.55, 0.31, 0.24)
+    portal_material.albedo_color = color
+    portal_material.emission = color
+    if is_instance_valid(portal_label):
+        portal_label.text = "Portal abierto" if unlocked else "Falta la llave"
+        portal_label.modulate = color
+
+func _make_result_ui(root: Control) -> void:
+    result_overlay = ColorRect.new()
+    result_overlay.color = Color(0.02, 0.04, 0.09, 0.85)
+    root.add_child(result_overlay)
+    result_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+    result_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+    var panel := PanelContainer.new()
+    result_overlay.add_child(panel)
+    panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+    panel.offset_left = -260
+    panel.offset_right = 260
+    panel.offset_top = -160
+    panel.offset_bottom = 160
+    var style := StyleBoxFlat.new()
+    style.bg_color = Color(0.07, 0.12, 0.2)
+    style.content_margin_left = 35
+    style.content_margin_right = 35
+    style.content_margin_top = 30
+    style.content_margin_bottom = 30
+    style.corner_radius_top_left = 20
+    style.corner_radius_top_right = 20
+    style.corner_radius_bottom_left = 20
+    style.corner_radius_bottom_right = 20
+    panel.add_theme_stylebox_override("panel", style)
+    var content := VBoxContainer.new()
+    content.add_theme_constant_override("separation", 24)
+    panel.add_child(content)
+    result_title = Label.new()
+    result_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    result_title.add_theme_font_size_override("font_size", 34)
+    content.add_child(result_title)
+    result_details = Label.new()
+    result_details.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    result_details.add_theme_font_size_override("font_size", 23)
+    content.add_child(result_details)
+    replay_button = Button.new()
+    replay_button.text = "Volver a jugar"
+    replay_button.custom_minimum_size = Vector2(420, 70)
+    replay_button.add_theme_font_size_override("font_size", 25)
+    replay_button.pressed.connect(_restart)
+    content.add_child(replay_button)
+    result_overlay.hide()
+
+func _show_result() -> void:
+    move_held = false
+    pending_turn = 0
+    pending_jump = false
+    look_held = false
+    settings_panel.hide()
+    if run.state == RunState.State.WON:
+        _save_record()
+        result_title.text = "¡Nivel completado!"
+        var best := record_seconds if record_seconds >= 0.0 else run.elapsed()
+        result_details.text = "Tiempo: %.2f s\nMejor tiempo: %.2f s" % [run.elapsed(), best]
+    else:
+        result_title.text = "Se acabó el tiempo"
+        result_details.text = "Recoge la llave y alcanza el portal"
+    replay_button.disabled = busy
+    result_overlay.show()
+
+func _load_record() -> void:
+    if test_mode:
+        return
+    var config := ConfigFile.new()
+    if config.load("user://records.cfg") == OK:
+        record_seconds = float(config.get_value("test-island", "best_seconds", -1.0))
+
+func _save_record() -> void:
+    if record_seconds < 0.0 or run.elapsed() < record_seconds:
+        record_seconds = run.elapsed()
+        if not test_mode:
+            var config := ConfigFile.new()
+            config.set_value("test-island", "best_seconds", record_seconds)
+            config.save("user://records.cfg")
+
+func _test_gameplay_state(failures: Array[String]) -> void:
+    var state = RunState.new()
+    var key := {"id": 0, "kind": "key", "cell": Vector3i.ZERO, "normal": Vector3i.UP}
+    var portal := {"id": 1, "kind": "portal", "cell": Vector3i.FORWARD, "normal": Vector3i.UP}
+    state.configure([key, portal], 10.0)
+    if state.visit(portal["cell"], Vector3i.UP) != "locked":
+        failures.append("Portal requires key")
+    if state.visit(key["cell"], Vector3i.DOWN) != "none" or not state.collected.is_empty():
+        failures.append("Key requires supporting face")
+    if state.visit(key["cell"], Vector3i.UP) != "key" or state.visit(key["cell"], Vector3i.UP) != "none" or state.collected.size() != 1:
+        failures.append("Single key pickup")
+    state.paused = true
+    state.tick(20.0)
+    if state.remaining != 10.0 or state.visit(portal["cell"], Vector3i.UP) != "none":
+        failures.append("Pause freezes timer and objectives")
+    state.paused = false
+    state.tick(1.0)
+    if state.visit(portal["cell"], Vector3i.UP) != "win" or state.state != RunState.State.WON:
+        failures.append("Unlocked portal completes level")
+    state.tick(20.0)
+    if state.remaining != 9.0 or state.visit(portal["cell"], Vector3i.UP) != "none":
+        failures.append("Win freezes run")
+    state.reset()
+    if not state.collected.is_empty() or state.remaining != 10.0 or state.state != RunState.State.RUNNING:
+        failures.append("Restart resets objective and timer")
+    state.tick(11.0)
+    if state.state != RunState.State.EXPIRED or state.remaining != 0.0 or state.visit(key["cell"], Vector3i.UP) != "none":
+        failures.append("Timeout blocks late pickup")
+    var valid := {"cells": [[1,1,1],[2,1,1]], "objects": [{"kind":"key","cell":[1,1,1],"normal":[0,0,-1]},{"kind":"portal","cell":[2,1,1],"normal":[0,0,-1]}]}
+    if not LevelLoader.validate(valid).get("ok", false):
+        failures.append("Playable schema accepted")
+    var bad: Dictionary = valid.duplicate(true)
+    bad["objects"][0]["normal"] = [1,0,0]
+    if LevelLoader.validate(bad).get("ok", false):
+        failures.append("Buried objective rejected")
+    bad = valid.duplicate(true)
+    bad["objects"][0]["cell"] = [30,30,30]
+    if LevelLoader.validate(bad).get("ok", false):
+        failures.append("Unsupported objective rejected")
+    print("GAMEPLAY STATE TESTS: key face, duplicate pickup, locked/unlocked portal, pause, timeout, reset and schema validation")
+
+func _run_route_test(failures: Array[String]) -> void:
+    busy = false
+    run.enabled = true
+    _restart()
+    await _advance()
+    await _jump()
+    if run.collected.size() != 1:
+        failures.append("Authored route collects key after jump")
+    await _advance()
+    await _turn(1)
+    for step in range(3):
+        await _advance()
+    await _turn(-1)
+    for step in range(3):
+        await _advance()
+    if run.state != RunState.State.WON or not result_overlay.visible:
+        failures.append("Authored route reaches unlocked portal")
+    if objective_nodes.has(0) and objective_nodes[0].visible:
+        failures.append("Collected key hidden")
+    var finished_cell := cell
+    await _advance()
+    await _jump()
+    if cell != finished_cell:
+        failures.append("Completed level blocks movement")
+    print("FULL ROUTE TEST: start, gap jump, key, two turns, portal, completion modal and movement lock")
+
+func _test_controls(failures: Array[String]) -> void:
+    _restart()
+    _set_move_held(true)
+    _request_jump()
+    _set_move_held(false)
+    await get_tree().create_timer(STEP_TIME + JUMP_TIME + 0.3).timeout
+    if run.collected.size() != 1 or busy or move_held:
+        failures.append("Buffered jump after held step")
+    var released_cell := cell
+    await get_tree().create_timer(0.3).timeout
+    if cell != released_cell or busy:
+        failures.append("Release stops continued movement")
+    _toggle_camera_settings()
+    var paused_time: float = run.remaining
+    _set_move_held(true)
+    _request_turn(1)
+    _request_jump()
+    await get_tree().create_timer(0.2).timeout
+    if run.remaining != paused_time or move_held or pending_jump or pending_turn != 0:
+        failures.append("Settings pause timer and queued input")
+    _toggle_camera_settings()
+    _restart()
+    run.remaining = 0.03
+    _set_move_held(true)
+    await get_tree().create_timer(0.5).timeout
+    if run.state != RunState.State.EXPIRED or not result_overlay.visible or move_held or busy:
+        failures.append("Timeout during movement")
+    _restart()
+    if result_overlay.visible or not run.collected.is_empty() or run.remaining <= 89.0:
+        failures.append("Retry after timeout")
+    print("CONTROL TESTS: held movement, buffered jump, release, settings pause, timeout during tween and retry")
