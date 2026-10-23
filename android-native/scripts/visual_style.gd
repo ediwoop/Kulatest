@@ -15,7 +15,7 @@ func _init() -> void:
     atlas_material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST_WITH_MIPMAPS
     atlas_material.cull_mode = BaseMaterial3D.CULL_DISABLED
     var shader := Shader.new()
-    shader.code = "shader_type spatial; render_mode unshaded, cull_disabled; void fragment(){float light=clamp(0.348+0.96*dot(normalize(NORMAL),normalize(vec3(-1.0,4.0,2.0))),0.348,1.0); ALBEDO=COLOR.rgb*light;}"
+    shader.code = "shader_type spatial; render_mode unshaded, cull_back; void fragment(){float light=clamp(0.348+0.96*dot(normalize(NORMAL),normalize(vec3(-1.0,4.0,2.0))),0.348,1.0); ALBEDO=COLOR.rgb*light;}"
     ball_material = ShaderMaterial.new()
     ball_material.shader = shader
 
@@ -34,7 +34,7 @@ func model(type: String, variant: int = 0) -> ArrayMesh:
             if bool(flags & 2) != transparent:
                 continue
             var polygon: Array = source["polys"][k]
-            var triangles: Array = [0,1,2,1,3,2] if polygon.size() == 4 else [0,1,2]
+            var triangles: Array = [0,2,1,1,2,3] if polygon.size() == 4 else [0,2,1]
             for corner in triangles:
                 var index := int(polygon[corner])
                 var raw: Array = source["frames"][0]
