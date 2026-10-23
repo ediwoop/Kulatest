@@ -39,16 +39,23 @@ jobs:
         run: |
           mkdir -p "$HOME/.config/godot"
           printf '[gd_resource type="EditorSettings" format=3]\n\n[resource]\nexport/android/android_sdk_path = "%s"\nexport/android/java_sdk_path = "%s"\n' "$ANDROID_HOME" "$JAVA_HOME" > "$HOME/.config/godot/editor_settings-4.4.tres"
-      - name: Generate debug signing keystore
+      - name: Restore stable public development signing key
         run: |
           mkdir -p "$HOME/.android"
-          keytool -genkeypair -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" -noprompt
+          base64 --decode ../.github/debug-signing/development.keystore.b64 > "$HOME/.android/debug.keystore"
       - name: Import and parse project
         run: godot --headless --editor --path . --quit
       - name: Run scene smoke test
         run: |
           timeout 30s godot --headless --path . -- --self-test 2>&1 | tee /tmp/kula-smoke.log
           if grep -Eq 'SCRIPT ERROR|ERROR:' /tmp/kula-smoke.log; then exit 1; fi
+      - name: Render camera checks
+        env:
+          LIBGL_ALWAYS_SOFTWARE: 'true'
+        run: |
+          mkdir -p build
+          timeout 60s xvfb-run -a godot --path . --rendering-method gl_compatibility --audio-driver Dummy -- --visual-test 2>&1 | tee /tmp/kula-visual.log
+          if grep -Eq 'SCRIPT ERROR|ERROR:' /tmp/kula-visual.log; then exit 1; fi
       - name: Export debug APK
         run: |
           mkdir -p build
@@ -56,5 +63,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: kula-native-debug-apk
-          path: android-native/build/kula-native-debug.apk
+          path: |
+            android-native/build/kula-native-debug.apk
+            android-native/build/camera-*.png
           if-no-files-found: error
