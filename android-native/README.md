@@ -1,11 +1,11 @@
-# Kula Native Prototype 0.4
+# Kula Native Prototype 0.5
 
-Original test level and procedural visuals, built with Godot on branch `android-native`. No original game assets are bundled.
+The default scene recreates LEVEL 1 from `/HIRO/HIRO.PAK`, index 0: 20 cells, the original start/heading, two bronze coins, a key, the first fruit (apple), the exit and its 99-second clock. Collecting everything gives 4,000 points.
 
-Hold **Avanzar** to roll, release to stop after the current step. Turn with **Izquierda/Derecha**. **Saltar** crosses two cells and is buffered if requested mid-step. Collect the key after the initial gap and enter the portal within 90 seconds. Pickups require the matching supporting face. Falling restarts the island. Completion/timeout offer **Volver a jugar**; best completion time is saved locally.
+`tools/import_level1.py` derives the native subset from the repository's committed `public/map_data.json`, `public/objects.json` and `public/tex/HIRO.png`. It does not edit those generated sources or require the disc. The ball is the original Hiro model with vertex colours and normals, not a substitute bitmap skin. Keys, coins, the apple and the exit use the committed object meshes. Block faces use the Hiro atlas and its face shade/corner rules. Existing GPL licensing applies to reused code; extracted game data/artwork remains the rights holders' material, as documented in the repository root README.
 
-Camera controls: **Mirar abajo** (hold), **Cámara** settings, Classic/Wide presets. Settings and loss of focus pause the timer. Closing settings resolves any pickup deferred while paused. The camera follows the ground anchor during jumps.
+The desert, sky and pyramids are an independent procedural approximation. The original panorama is not available as a ready-to-use extracted asset here. This build does not claim pixel-identical rendering, a complete original HUD, original audio or the full campaign.
 
-Checks cover six-face movement/camera, key/portal state, schema validation, timer/pause/retry, held controls, buffered jump and a complete authored route. Rendered checks capture camera views and completion. APK signer is verified against the fixed public development certificate. **Uninstall 0.3 or earlier once before installing 0.4**; see `.github/debug-signing`.
+The ball breathes at rest, keeps its body rotation between steps, stretches slightly in flight and squashes on landing with its contact side anchored. A fading soft shadow follows the supporting face. The touch controls, camera presets, timer pause, completion screen and local best time remain available. The 0.4 development signing key is preserved and verified during export.
 
-This is a single prototype level; a campaign, original levels/assets, audio and obstacles remain to be implemented.
+The automated native checks retain the original prototype fixture and also play the full imported first level, checking its layout, start, pickups, locked/open exit and score. OpenGL captures check the ball, textured blocks, scenery, jump and completion. Repository checks follow `CLAUDE.md`.

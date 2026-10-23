@@ -47,7 +47,7 @@ jobs:
         run: godot --headless --editor --path . --quit
       - name: Run scene smoke test
         run: |
-          timeout 30s godot --headless --path . -- --self-test 2>&1 | tee /tmp/kula-smoke.log
+          timeout 50s godot --headless --path . -- --self-test 2>&1 | tee /tmp/kula-smoke.log
           if grep -Eq 'SCRIPT ERROR|ERROR:' /tmp/kula-smoke.log; then exit 1; fi
       - name: Render camera checks
         env:

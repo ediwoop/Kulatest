@@ -1,12 +1,14 @@
 extends Node3D
-## Original prototype geometry and implementation; no original game assets.
+## Native runtime using the committed first-level geometry and artwork subset.
 const LevelLoader = preload("res://scripts/level_loader.gd")
+const VisualStyle = preload("res://scripts/visual_style.gd")
 const RunState = preload("res://scripts/run_state.gd")
 const FollowCamera = preload("res://scripts/follow_camera.gd")
 const TURN_TIME := 19.0 / 60.0
-const LEVEL_PATH := "res://levels/test_level.json"
+const LEVEL_PATH := "res://levels/level1.json"
+const BALL_RADIUS := 100.0 / 512.0
 const STEP_TIME := 0.22
-const BALL_OFFSET := 0.74
+const BALL_OFFSET := 0.5 + BALL_RADIUS
 const JUMP_TIME := 0.65
 var ball: Node3D
 var ball_mesh: MeshInstance3D
@@ -48,6 +50,17 @@ var pending_jump := false
 var app_active := true
 var visual_clock := 0.0
 var record_seconds := -1.0
+var style = VisualStyle.new()
+var level_root: Node3D
+var cube_nodes: Dictionary = {}
+var original_cells: Array[Vector3i] = []
+var ball_body := Basis.IDENTITY
+var motion_body := Basis.IDENTITY
+var landing_age := 1.0
+var in_air := false
+var shadow: MeshInstance3D
+var shadow_material: ShaderMaterial
+var start_normal := Vector3i.UP
 
 func _ready() -> void:
     test_mode = "--self-test" in OS.get_cmdline_user_args() or "--visual-test" in OS.get_cmdline_user_args()
@@ -58,7 +71,8 @@ func _ready() -> void:
     camera.current = true
     add_child(camera)
     _make_ui()
-    _load_level()
+    _theme_ui(get_tree().root)
+    _load_level("res://levels/test_level.json" if "--self-test" in OS.get_cmdline_user_args() else LEVEL_PATH)
     _update_camera(0.0)
     if "--self-test" in OS.get_cmdline_user_args():
         _run_self_test.call_deferred()
@@ -68,11 +82,12 @@ func _ready() -> void:
 func _process(delta: float) -> void:
     _update_camera(delta)
     visual_clock += delta
+    _animate_ball(delta)
     for id in objective_nodes:
         var node: Node3D = objective_nodes[id]
-        if node.has_meta("key"):
+        if node.has_meta("spin"):
             node.rotation.y = visual_clock * 1.4
-            node.position.y = sin(visual_clock * 2.4) * 0.035
+            node.position.y = float(node.get_meta("base_height",0.0)) + sin(visual_clock*2.4)*0.035*(0.0 if node.has_meta("portal") else 1.0)
     var was_paused: bool = run.paused
     run.paused = not app_active or (is_instance_valid(settings_panel) and settings_panel.visible)
     if was_paused and not run.paused and not busy:
@@ -81,7 +96,7 @@ func _process(delta: float) -> void:
         _show_result()
     hint_remaining = maxf(0.0, hint_remaining - delta)
     if hint_remaining == 0.0 and is_instance_valid(hint):
-        hint.text = "Mantén Avanzar · salta el hueco · recoge la llave y entra al portal"
+        hint.text = "Mantén Avanzar · recoge la llave y alcanza la salida"
     _refresh_hud()
     if is_instance_valid(replay_button):
         replay_button.disabled = busy
@@ -98,46 +113,40 @@ func _process(delta: float) -> void:
         _advance()
 
 func _make_environment() -> void:
-    var light := DirectionalLight3D.new()
-    light.rotation_degrees = Vector3(-45, 30, 0)
-    light.light_energy = 1.2
-    add_child(light)
-    var world := WorldEnvironment.new()
-    world.environment = Environment.new()
-    world.environment.background_mode = Environment.BG_COLOR
-    world.environment.background_color = Color(0.06, 0.09, 0.17)
-    world.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-    world.environment.ambient_light_color = Color(0.7, 0.8, 1.0)
-    world.environment.ambient_light_energy = 0.55
-    add_child(world)
+    style.environment(self)
 
-func _load_level() -> void:
-    var result: Dictionary = LevelLoader.from_json_file(LEVEL_PATH)
+func _load_level(path: String = LEVEL_PATH) -> void:
+    var result: Dictionary = LevelLoader.from_json_file(path)
     if not result.get("ok", false):
         status.text = "Error: " + str(result.get("error", "unknown"))
         push_error(status.text)
         return
+    if is_instance_valid(level_root):
+        level_root.free()
+    level_root = Node3D.new()
+    add_child(level_root)
+    occupied.clear()
+    objective_nodes.clear()
+    cube_nodes.clear()
+    portal_label = null
+    portal_material = null
     var points: Array[Vector3i] = result["cells"]
+    original_cells = points
     for point in points:
-        var at := LevelLoader.to_world(point)
-        occupied[at] = true
-        var mesh := MeshInstance3D.new()
-        var cube := BoxMesh.new()
-        cube.size = Vector3.ONE * 0.98
-        mesh.mesh = cube
-        var material := StandardMaterial3D.new()
-        material.albedo_color = Color(0.26, 0.65, 0.74) if (at.x + at.y + at.z) % 2 == 0 else Color(0.38, 0.77, 0.80)
-        mesh.material_override = material
-        mesh.position = Vector3(at)
-        add_child(mesh)
-    start_cell = LevelLoader.to_world(points[0])
-    for direction in [Vector3i.FORWARD, Vector3i.RIGHT, Vector3i.BACK, Vector3i.LEFT]:
-        if occupied.has(start_cell + direction):
-            start_facing = direction
-            break
+        occupied[LevelLoader.to_world(point)] = true
+    start_cell = result.get("start_cell", LevelLoader.to_world(points[0]))
+    start_normal = result.get("start_normal", Vector3i.UP)
+    start_facing = result.get("start_heading", Vector3i.FORWARD)
+    if not result.has("start_heading"):
+        for direction in [Vector3i.FORWARD, Vector3i.RIGHT, Vector3i.BACK, Vector3i.LEFT]:
+            if occupied.has(start_cell + direction):
+                start_facing = direction
+                break
     level_name = str(result["name"])
     run.configure(result.get("objects", []), result.get("time_limit", 90.0))
     _make_objectives()
+    _rebuild_cubes()
+    record_seconds = -1.0
     _load_record()
     ready_to_play = true
     _restart()
@@ -146,16 +155,18 @@ func _make_ball() -> void:
     ball = Node3D.new()
     add_child(ball)
     ball_mesh = MeshInstance3D.new()
-    var sphere := SphereMesh.new()
-    sphere.radius = 0.23
-    sphere.height = 0.46
-    ball_mesh.mesh = sphere
-    var shader := Shader.new()
-    shader.code = "shader_type spatial; varying vec3 p; void vertex(){p=VERTEX;} void fragment(){float stripe=step(0.0,sin(p.y*45.0)); ALBEDO=mix(vec3(1.0,0.45,0.08),vec3(1.0,0.92,0.6),stripe); ROUGHNESS=0.65;}"
-    var material := ShaderMaterial.new()
-    material.shader = shader
-    ball_mesh.material_override = material
+    ball_mesh.mesh = style.model("ball")
     ball.add_child(ball_mesh)
+    shadow = MeshInstance3D.new()
+    var quad := PlaneMesh.new()
+    quad.size = Vector2(0.58,0.58)
+    shadow.mesh = quad
+    var shader := Shader.new()
+    shader.code = "shader_type spatial; render_mode unshaded, blend_mix, depth_draw_never, cull_disabled; uniform float strength=0.5; void fragment(){float r=length(UV-vec2(0.5))*2.0; ALBEDO=vec3(0.10,0.065,0.025); ALPHA=(1.0-smoothstep(0.10,1.0,r))*strength;}"
+    shadow_material = ShaderMaterial.new()
+    shadow_material.shader = shader
+    shadow.material_override = shadow_material
+    add_child(shadow)
 
 func _frame(up: Vector3i, ahead: Vector3i) -> Basis:
     return Basis(Vector3(ahead).cross(Vector3(up)), Vector3(up), -Vector3(ahead)).orthonormalized()
@@ -187,7 +198,13 @@ func _advance() -> void:
         move_held = false
         _say("Pared delante · gira para continuar")
         return
+    var side := Vector3i(Vector3(facing).cross(Vector3(normal)))
+    if not occupied.has(next) and (occupied.has(cell+side) or occupied.has(cell-side)):
+        move_held = false
+        _say("Gira para seguir el recorrido")
+        return
     busy = true
+    motion_body = ball_body
     var old_normal := normal
     var old_facing := facing
     var origin := ball.position
@@ -211,7 +228,7 @@ func _roll_linear(t: float, origin: Vector3, destination: Vector3, up: Vector3i,
     ball.position = origin.lerp(destination, t)
     camera_anchor = ball.position
     var axis := Vector3(up).cross(Vector3(forward)).normalized()
-    ball_mesh.basis = Basis(axis, t * origin.distance_to(destination) / 0.23)
+    ball_body = (Basis(axis, t * origin.distance_to(destination) * 5.0 * TAU / 8.0) * motion_body).orthonormalized()
 
 func _roll_edge(t: float, at: Vector3i, up: Vector3i, forward: Vector3i) -> void:
     var n := Vector3(up)
@@ -219,16 +236,16 @@ func _roll_edge(t: float, at: Vector3i, up: Vector3i, forward: Vector3i) -> void
     var center := Vector3(at)
     var edge := center + (n + f) * 0.5
     if t < 0.3:
-        ball.position = (center + n * BALL_OFFSET).lerp(edge + n * 0.24, t / 0.3)
+        ball.position = (center + n * BALL_OFFSET).lerp(edge + n * BALL_RADIUS, t / 0.3)
     elif t < 0.7:
         var angle := (t - 0.3) / 0.4 * PI * 0.5
-        ball.position = edge + (n * cos(angle) + f * sin(angle)) * 0.24
+        ball.position = edge + (n * cos(angle) + f * sin(angle)) * BALL_RADIUS
     else:
-        ball.position = (edge + f * 0.24).lerp(center + f * BALL_OFFSET, (t - 0.7) / 0.3)
+        ball.position = (edge + f * BALL_RADIUS).lerp(center + f * BALL_OFFSET, (t - 0.7) / 0.3)
     camera_anchor = ball.position
     var progress := clampf((t - 0.3) / 0.4, 0.0, 1.0)
     view_frame = _frame(up, forward).slerp(_frame(forward, -up), progress).orthonormalized()
-    ball_mesh.basis = Basis(n.cross(f).normalized(), t * 5.8)
+    ball_body = (Basis(n.cross(f).normalized(), t * 5.8) * motion_body).orthonormalized()
 
 func _turn(direction: int) -> void:
     if not _can_move():
@@ -255,6 +272,8 @@ func _jump() -> void:
             _say("Salto bloqueado por un cubo")
             return
     busy = true
+    in_air = true
+    motion_body = ball_body
     var landing := cell + facing * 2
     var origin := ball.position
     var destination := _surface_position(landing, normal)
@@ -268,6 +287,8 @@ func _jump() -> void:
         return
     if occupied.has(landing):
         cell = landing
+        in_air = false
+        landing_age = 0.0
         ball.position = destination
         _say("Salto completado")
         busy = false
@@ -303,18 +324,22 @@ func _restart() -> void:
         if objective_nodes.has(object["id"]):
             objective_nodes[object["id"]].show()
     _update_portal()
+    _rebuild_cubes()
     cell = start_cell
     facing = start_facing
-    normal = Vector3i.UP
+    normal = start_normal
     ball.position = _surface_position(cell, normal)
-    ball_mesh.basis = Basis.IDENTITY
+    ball_body = Basis.IDENTITY
+    motion_body = Basis.IDENTITY
+    landing_age = 1.0
+    in_air = false
     camera_anchor = ball.position
     view_frame = _frame(normal, facing)
     follow_camera.look_amount = 0.0
     look_held = false
     _update_camera(0.0)
     status.text = level_name
-    _say("Recoge la llave dorada y alcanza el portal")
+    _say("Recoge la llave dorada y alcanza la salida")
     _refresh_hud()
 
 func _input(event: InputEvent) -> void:
@@ -431,6 +456,8 @@ func _run_self_test() -> void:
         run.enabled = true
         await _test_controls(failures)
         await _run_route_test(failures)
+        await _test_original_level(failures)
+        _test_ball_visuals(failures)
     if failures.is_empty():
         print("SELF-TEST PASS: movement and edge transitions on 6 faces, turning, jump, fall/reset, wall, clearance and input guard")
         get_tree().quit(0)
@@ -634,35 +661,28 @@ func _run_visual_test() -> void:
     _camera_preset(1.0)
     settings_panel.show()
     await _capture("camera-settings")
-    settings_panel.hide()
-    await get_tree().process_frame
+    _toggle_camera_settings()
     await _advance()
-    var before := camera.position
+    await _capture("camera-first-coin")
+    await _advance()
     _jump()
-    await get_tree().create_timer(JUMP_TIME * 0.5).timeout
+    await get_tree().create_timer(JUMP_TIME*0.5).timeout
     await _capture("camera-jump")
     await get_tree().create_timer(JUMP_TIME).timeout
-    await _capture("camera-key-collected")
-    await _turn(1)
-    await _capture("camera-turn")
-    await _advance()
-    await _capture("camera-side")
-    await _advance()
-    await _capture("camera-under")
-    look_held = true
-    await get_tree().create_timer(0.4).timeout
-    await _capture("camera-look-down")
-    look_held = false
+    await _capture("camera-ball-landing")
+    busy = false
     var failures: Array[String] = []
-    await _run_route_test(failures)
+    await _test_original_level(failures)
     if not failures.is_empty():
         push_error(str(failures))
         get_tree().quit(1)
         return
     await _capture("camera-level-complete")
+    _restart()
+    await _turn(1)
+    await _capture("camera-scenery")
     print("VISUAL TEST PASS")
     get_tree().quit(0)
-
 
 func _can_move() -> bool:
     return ready_to_play and not busy and app_active and (not run.enabled or (run.state == RunState.State.RUNNING and not run.paused))
@@ -706,19 +726,21 @@ func _refresh_hud() -> void:
     if not is_instance_valid(hud):
         return
     var pause_text := " · PAUSA" if run.paused else ""
-    hud.text = "Llaves %d/%d  ·  Tiempo %.1f s%s" % [run.collected.size(), run.required_keys, run.remaining, pause_text]
-    hud.modulate = Color(1.0, 0.43, 0.35) if run.remaining < 15.0 else Color(0.85, 0.94, 1.0)
+    hud.text = "%02d  ·  LLAVES %d/%d  ·  %05d PTS%s" % [int(ceil(run.remaining)),run.collected.size(),run.required_keys,run.score,pause_text]
+    hud.modulate = Color(1.0,0.43,0.35) if run.remaining < 15.0 else Color(1.0,0.85,0.35)
 
 func _visit_surface() -> void:
     var event: String = run.visit(cell, normal)
-    if event == "key":
+    if event in ["key","coin","fruit"]:
         for object in run.objects:
-            if object["kind"] == "key" and run.collected.has(object["id"]) and objective_nodes.has(object["id"]):
+            if run.taken.has(object["id"]) and objective_nodes.has(object["id"]):
                 objective_nodes[object["id"]].hide()
-        _update_portal()
-        _say("Llave recogida · el portal está abierto")
+        if event == "key":
+            _update_portal()
+            _rebuild_cubes()
+        _say({"key":"Llave recogida · salida abierta","coin":"Moneda recogida · +250 puntos","fruit":"Manzana recogida · +2500 puntos"}[event])
     elif event == "locked":
-        _say("Portal cerrado · necesitas la llave")
+        _say("Salida cerrada · necesitas la llave")
     elif event == "win":
         _show_result()
     _refresh_hud()
@@ -734,61 +756,35 @@ func _mesh(parent: Node3D, shape: Mesh, material: Material, at: Vector3 = Vector
 func _make_objectives() -> void:
     for object in run.objects:
         var root := Node3D.new()
-        root.position = Vector3(object["cell"]) + Vector3(object["normal"]) * 0.88
         var up: Vector3i = object["normal"]
+        root.position = Vector3(object["cell"]) + Vector3(up)*0.51
         var ahead := Vector3i.FORWARD if abs(up.y) == 1 else Vector3i.UP
-        root.basis = _frame(up, ahead)
-        add_child(root)
-        var model := Node3D.new()
+        root.basis = _frame(up,ahead)
+        level_root.add_child(root)
+        var model := MeshInstance3D.new()
+        var type: String = {"portal":"7","key":"31","coin":"37","fruit":"43"}[object["kind"]]
+        var variant: int = int(object.get("variant",0)) if type == "37" else 0
+        model.mesh = style.model(type,variant)
+        var source: Dictionary = style.data["models"][type][variant]
+        model.position.y = -float(source["box"][0][1])/512.0 + 0.06
+        if object["kind"] != "portal":
+            model.set_meta("spin",true)
+            root.position += Vector3(up)*(-float(source["box"][0][1])/512.0+0.10)
+            model.position = Vector3.ZERO
+        model.set_meta("base_height",model.position.y)
+        model.set_meta("spin",true)
+        if object["kind"] == "portal":
+            model.set_meta("portal",true)
         root.add_child(model)
         objective_nodes[object["id"]] = model
-        if object["kind"] == "key":
-            model.set_meta("key", true)
-            var gold := StandardMaterial3D.new()
-            gold.albedo_color = Color(1.0, 0.72, 0.10)
-            gold.metallic = 0.5
-            gold.roughness = 0.3
-            gold.emission_enabled = true
-            gold.emission = Color(0.6, 0.26, 0.01)
-            var ring := TorusMesh.new()
-            ring.inner_radius = 0.065
-            ring.outer_radius = 0.11
-            _mesh(model, ring, gold, Vector3(0, 0.12, 0)).rotation.x = PI * 0.5
-            var shaft := CylinderMesh.new()
-            shaft.top_radius = 0.024
-            shaft.bottom_radius = 0.024
-            shaft.height = 0.25
-            _mesh(model, shaft, gold, Vector3(0, -0.07, 0))
-            for y in [-0.12, -0.18]:
-                var tooth := BoxMesh.new()
-                tooth.size = Vector3(0.09, 0.035, 0.045)
-                _mesh(model, tooth, gold, Vector3(0.025, y, 0))
-        else:
-            portal_material = StandardMaterial3D.new()
-            portal_material.emission_enabled = true
-            portal_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-            var arch := TorusMesh.new()
-            arch.inner_radius = 0.28
-            arch.outer_radius = 0.35
-            _mesh(model, arch, portal_material).rotation.x = PI * 0.5
-            portal_label = Label3D.new()
-            portal_label.position = Vector3(0, 0.48, 0)
-            portal_label.font_size = 36
-            portal_label.pixel_size = 0.004
-            portal_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-            model.add_child(portal_label)
     _update_portal()
 
 func _update_portal() -> void:
-    if not is_instance_valid(portal_material):
-        return
     var unlocked: bool = run.collected.size() >= run.required_keys
-    var color := Color(0.2, 0.95, 0.8) if unlocked else Color(0.55, 0.31, 0.24)
-    portal_material.albedo_color = color
-    portal_material.emission = color
-    if is_instance_valid(portal_label):
-        portal_label.text = "Portal abierto" if unlocked else "Falta la llave"
-        portal_label.modulate = color
+    for object in run.objects:
+        if object["kind"] == "portal" and objective_nodes.has(object["id"]):
+            var model: MeshInstance3D = objective_nodes[object["id"]]
+            model.mesh = style.model("7",0 if unlocked else 1)
 
 func _make_result_ui(root: Control) -> void:
     result_overlay = ColorRect.new()
@@ -843,7 +839,7 @@ func _show_result() -> void:
         _save_record()
         result_title.text = "¡Nivel completado!"
         var best := record_seconds if record_seconds >= 0.0 else run.elapsed()
-        result_details.text = "Tiempo: %.2f s\nMejor tiempo: %.2f s" % [run.elapsed(), best]
+        result_details.text = "%05d puntos · %.2f s\nMejor tiempo: %.2f s" % [run.score, run.elapsed(), best]
     else:
         result_title.text = "Se acabó el tiempo"
         result_details.text = "Recoge la llave y alcanza el portal"
@@ -855,14 +851,14 @@ func _load_record() -> void:
         return
     var config := ConfigFile.new()
     if config.load("user://records.cfg") == OK:
-        record_seconds = float(config.get_value("test-island", "best_seconds", -1.0))
+        record_seconds = float(config.get_value(level_name, "best_seconds", -1.0))
 
 func _save_record() -> void:
     if record_seconds < 0.0 or run.elapsed() < record_seconds:
         record_seconds = run.elapsed()
         if not test_mode:
             var config := ConfigFile.new()
-            config.set_value("test-island", "best_seconds", record_seconds)
+            config.set_value(level_name, "best_seconds", record_seconds)
             config.save("user://records.cfg")
 
 func _test_gameplay_state(failures: Array[String]) -> void:
@@ -974,3 +970,119 @@ func _test_controls(failures: Array[String]) -> void:
     if result_overlay.visible or not run.collected.is_empty() or run.remaining <= 89.0:
         failures.append("Retry after timeout")
     print("CONTROL TESTS: held movement, buffered jump, release, settings pause, timeout during tween and retry")
+
+func _rebuild_cubes() -> void:
+    if not is_instance_valid(level_root):
+        return
+    for node in cube_nodes.values():
+        node.free()
+    cube_nodes.clear()
+    var surfaces: Array = run.objects.duplicate()
+    surfaces.append({"kind":"start","cell":start_cell,"normal":start_normal})
+    for original in original_cells:
+        var mesh := MeshInstance3D.new()
+        mesh.mesh = style.cube(original,occupied,surfaces,run.collected.size() >= run.required_keys)
+        mesh.position = Vector3(LevelLoader.to_world(original))
+        level_root.add_child(mesh)
+        cube_nodes[LevelLoader.to_world(original)] = mesh
+
+func _animate_ball(delta: float) -> void:
+    if not is_instance_valid(ball_mesh) or not ready_to_play:
+        return
+    landing_age += delta
+    var breath := sin(visual_clock*TAU)*200.0/4096.0
+    var landing := 0.0
+    if landing_age < 0.47:
+        landing = sin(minf(landing_age/0.07,1.0)*PI*0.5)*0.1826*maxf(0.0,1.0-landing_age/0.47)
+    var width := 1.0+breath+landing
+    var height := 1.0-2.0*(breath+landing)
+    if in_air:
+        width *= 0.97
+        height *= 1.05
+    var frame := view_frame.orthonormalized()
+    ball_mesh.basis = frame*Basis.from_scale(Vector3(width,height,width))*frame.inverse()*ball_body
+    ball_mesh.position = frame.y*BALL_RADIUS*(height-1.0)
+    if is_instance_valid(shadow):
+        var under := Vector3i((camera_anchor-Vector3(normal)*BALL_OFFSET).round())
+        shadow.visible = occupied.has(under) and not (run.enabled and run.state == RunState.State.WON)
+        shadow.position = Vector3(under)+Vector3(normal)*0.505
+        shadow.basis = _frame(normal,facing)
+        shadow.scale = Vector3(width,1.0,width)
+        var clearance := maxf(0.0,(ball.position-camera_anchor).dot(Vector3(normal)))
+        shadow_material.set_shader_parameter("strength",maxf(0.0,0.48*(1.0-clearance)))
+
+func _theme_ui(node: Node) -> void:
+    if node is Button:
+        var base := StyleBoxFlat.new()
+        base.bg_color = Color(0.08,0.13,0.16,0.70)
+        base.border_color = Color(0.95,0.81,0.47,0.50)
+        base.set_border_width_all(1)
+        base.set_corner_radius_all(16)
+        base.content_margin_left = 14
+        base.content_margin_right = 14
+        node.add_theme_stylebox_override("normal",base)
+        var pressed := base.duplicate()
+        pressed.bg_color = Color(0.64,0.43,0.16,0.90)
+        pressed.border_color = Color(1.0,0.90,0.57)
+        node.add_theme_stylebox_override("pressed",pressed)
+        var hover := base.duplicate()
+        hover.bg_color = Color(0.18,0.24,0.25,0.85)
+        node.add_theme_stylebox_override("hover",hover)
+        node.add_theme_color_override("font_color",Color(1.0,0.93,0.75))
+    if node is Label:
+        node.add_theme_color_override("font_shadow_color",Color(0.07,0.08,0.09,0.90))
+        node.add_theme_constant_override("shadow_offset_x",2)
+        node.add_theme_constant_override("shadow_offset_y",2)
+    for child in node.get_children():
+        _theme_ui(child)
+
+func _test_original_level(failures: Array[String]) -> void:
+    busy = false
+    _load_level(LEVEL_PATH)
+    if occupied.size()!=20 or run.objects.size()!=5 or run.time_limit!=99 or start_cell!=Vector3i(17,-17,18) or facing!=Vector3i.FORWARD:
+        failures.append("Original LEVEL 1 import/start")
+    for step in range(6):
+        await _advance()
+    if run.state!=RunState.State.RUNNING or run.score!=250:
+        failures.append("LEVEL 1 bronze coin and locked exit")
+    await _turn(1)
+    for step in range(3):
+        await _advance()
+    await _turn(1)
+    for step in range(6):
+        await _advance()
+    if run.collected.size()!=1 or run.taken.size()!=4 or run.score!=4000:
+        failures.append("LEVEL 1 two coins, key and first-fruit apple")
+    if "--visual-test" in OS.get_cmdline_user_args():
+        await _capture("camera-key-collected")
+    await _turn(1)
+    for step in range(3):
+        await _advance()
+    await _turn(1)
+    for step in range(6):
+        await _advance()
+    if run.state!=RunState.State.WON or not result_overlay.visible:
+        failures.append("LEVEL 1 full completion")
+    print("ORIGINAL LEVEL 1 PASS: 20 cells, original start, two bronze coins, apple, key, locked/unlocked exit, 99 seconds and 4000 points")
+
+func _test_ball_visuals(failures: Array[String]) -> void:
+    if style.data["ball"]["polys"].size()!=128 or style.data["ball"]["frames"][0].size()!=294:
+        failures.append("Original ball geometry retained")
+    ball_body = Basis.IDENTITY
+    motion_body = ball_body
+    _roll_linear(1.0,Vector3.ZERO,Vector3.FORWARD,Vector3i.UP,Vector3i.FORWARD)
+    var first := ball_body
+    motion_body = first
+    _roll_linear(1.0,Vector3.ZERO,Vector3.FORWARD,Vector3i.UP,Vector3i.FORWARD)
+    if ball_body.is_equal_approx(first) or not ball_body.is_equal_approx(Basis(Vector3.LEFT,10.0*TAU/8.0)):
+        failures.append("Continuous accumulated ball roll")
+    ball_body = Basis.IDENTITY
+    view_frame = _frame(Vector3i.UP,Vector3i.FORWARD)
+    in_air = false
+    landing_age = 0.0
+    visual_clock = 0.0
+    _animate_ball(0.05)
+    var height := ball_mesh.basis.y.length()
+    if height >= 1.0 or ball_mesh.basis.x.length()<=1.0 or abs(ball_mesh.position.y-BALL_RADIUS*height+BALL_RADIUS)>0.001:
+        failures.append("Landing squash anchored to supporting face")
+    print("BALL VISUAL TESTS: original vertex-colour skin, continuous roll and support-anchored landing squash")

@@ -44,7 +44,7 @@ static func validate(data: Dictionary) -> Dictionary:
     var surfaces := {}
     var portals := 0
     for raw in raw_objects:
-        if not (raw is Dictionary) or not (raw.get("kind", "") in ["key", "portal"]):
+        if not (raw is Dictionary) or not (raw.get("kind", "") in ["key", "portal", "coin", "fruit"]):
             return {"ok": false, "error": "Unknown objective kind"}
         if not _triplet(raw.get("cell"), 0, GRID_SIZE - 1) or not _triplet(raw.get("normal"), -1, 1):
             return {"ok": false, "error": "Invalid objective coordinates"}
@@ -58,13 +58,26 @@ static func validate(data: Dictionary) -> Dictionary:
         surfaces[surface] = true
         if raw["kind"] == "portal":
             portals += 1
-        objects.append({"id": objects.size(), "kind": raw["kind"], "cell": to_world(at), "normal": to_world(normal)})
+        objects.append({"id": objects.size(), "kind": raw["kind"], "cell": to_world(at), "normal": to_world(normal), "variant": clampi(int(raw.get("variant",0)),0,2)})
     if not objects.is_empty() and portals != 1:
         return {"ok": false, "error": "Playable levels need exactly one portal"}
     var seconds: Variant = data.get("time_limit", 90.0)
     if not (seconds is int or seconds is float) or not is_finite(float(seconds)) or seconds <= 0 or seconds > 3600:
         return {"ok": false, "error": "Invalid time limit"}
-    return {"ok": true, "cells": points, "name": str(data.get("name", "Test level")), "objects": objects, "time_limit": float(seconds)}
+    var result := {"ok": true, "cells": points, "name": str(data.get("name", "Test level")), "objects": objects, "time_limit": float(seconds)}
+    if data.has("start"):
+        var start: Variant = data["start"]
+        if not start is Dictionary or not _triplet(start.get("cell"),0,33) or not _triplet(start.get("normal"),-1,1) or not _triplet(start.get("heading"),-1,1):
+            return {"ok":false,"error":"Invalid start"}
+        var at := Vector3i(start["cell"][0],start["cell"][1],start["cell"][2])
+        var up := Vector3i(start["normal"][0],start["normal"][1],start["normal"][2])
+        var heading := Vector3i(start["heading"][0],start["heading"][1],start["heading"][2])
+        if not seen.has(at) or seen.has(at+up) or up.length_squared()!=1 or heading.length_squared()!=1 or Vector3(up).dot(Vector3(heading))!=0:
+            return {"ok":false,"error":"Invalid start supporting frame"}
+        result["start_cell"] = to_world(at)
+        result["start_normal"] = to_world(up)
+        result["start_heading"] = to_world(heading)
+    return result
 
 static func to_world(point: Vector3i) -> Vector3i:
     return Vector3i(point.x, -point.z, point.y)
