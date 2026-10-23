@@ -38,7 +38,7 @@ jobs:
       - name: Set Android SDK for Godot
         run: |
           mkdir -p "$HOME/.config/godot"
-          printf '[gd_resource type="EditorSettings" format=3]\n\n[resource]\nexport/android/android_sdk_path = "%s"\nexport/android/java_sdk_path = "%s"\n' "$ANDROID_HOME" "$JAVA_HOME" > "$HOME/.config/godot/editor_settings-4.4.tres"
+          printf '[gd_resource type="EditorSettings" format=3]\n\n[resource]\nexport/android/android_sdk_path = "%s"\nexport/android/java_sdk_path = "%s"\nexport/android/debug_keystore = "%s"\n' "$ANDROID_HOME" "$JAVA_HOME" "$HOME/.android/debug.keystore" > "$HOME/.config/godot/editor_settings-4.4.tres"
       - name: Restore stable public development signing key
         run: |
           mkdir -p "$HOME/.android"
@@ -60,6 +60,13 @@ jobs:
         run: |
           mkdir -p build
           godot --headless --path . --export-debug "Android" build/kula-native-debug.apk
+      - name: Verify stable development signing certificate
+        run: |
+          keytool -exportcert -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey -file /tmp/kula-debug-cert.der
+          kula_expected_cert="$(sha256sum /tmp/kula-debug-cert.der | cut -d ' ' -f1)"
+          kula_apk_cert="$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs build/kula-native-debug.apk | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
+          test "$kula_expected_cert" = "$kula_apk_cert"
+          printf 'Verified development signing certificate: %s\n' "$kula_apk_cert"
       - uses: actions/upload-artifact@v4
         with:
           name: kula-native-debug-apk

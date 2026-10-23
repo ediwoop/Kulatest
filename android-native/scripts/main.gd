@@ -635,6 +635,7 @@ func _run_visual_test() -> void:
     settings_panel.show()
     await _capture("camera-settings")
     settings_panel.hide()
+    await get_tree().process_frame
     await _advance()
     var before := camera.position
     _jump()
