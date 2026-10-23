@@ -23,7 +23,9 @@ static func validate(data: Dictionary) -> Dictionary:
         if not (raw is Array) or raw.size() != 3:
             return {"ok": false, "error": "Each cell must be [x,y,z]"}
         for coordinate in raw:
-            if not (coordinate is int) or coordinate < 0 or coordinate >= GRID_SIZE:
+            if not (coordinate is int or coordinate is float):
+                return {"ok": false, "error": "Coordinates must be numbers"}
+            if not is_finite(float(coordinate)) or coordinate != floor(coordinate) or coordinate < 0 or coordinate >= GRID_SIZE:
                 return {"ok": false, "error": "Coordinates must be integers 0..33"}
         var point := Vector3i(raw[0], raw[1], raw[2])
         if seen.has(point):
