@@ -45,6 +45,10 @@ jobs:
           keytool -genkeypair -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" -noprompt
       - name: Import and parse project
         run: godot --headless --editor --path . --quit
+      - name: Run scene smoke test
+        run: |
+          godot --headless --path . --quit-after 10 2>&1 | tee /tmp/kula-smoke.log
+          if grep -Eq 'SCRIPT ERROR|ERROR:' /tmp/kula-smoke.log; then exit 1; fi
       - name: Export debug APK
         run: |
           mkdir -p build
