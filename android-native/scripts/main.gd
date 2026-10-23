@@ -690,6 +690,8 @@ func _request_jump() -> void:
 func _toggle_camera_settings() -> void:
     settings_panel.visible = not settings_panel.visible
     run.paused = settings_panel.visible or not app_active
+    if not settings_panel.visible and _can_move():
+        _visit_surface()
     move_held = false
     pending_turn = 0
     pending_jump = false
@@ -950,6 +952,17 @@ func _test_controls(failures: Array[String]) -> void:
     if run.remaining != paused_time or move_held or pending_jump or pending_turn != 0:
         failures.append("Settings pause timer and queued input")
     _toggle_camera_settings()
+    _restart()
+    await _advance()
+    _jump()
+    await get_tree().create_timer(0.1).timeout
+    _toggle_camera_settings()
+    await get_tree().create_timer(JUMP_TIME + 0.1).timeout
+    if not run.collected.is_empty():
+        failures.append("Paused arrival defers pickup")
+    _toggle_camera_settings()
+    if run.collected.size() != 1:
+        failures.append("Resume resolves deferred surface pickup")
     _restart()
     run.remaining = 0.03
     _set_move_held(true)
