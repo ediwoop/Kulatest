@@ -47,7 +47,7 @@ jobs:
         run: godot --headless --editor --path . --quit
       - name: Run scene smoke test
         run: |
-          godot --headless --path . --quit-after 10 2>&1 | tee /tmp/kula-smoke.log
+          timeout 30s godot --headless --path . -- --self-test 2>&1 | tee /tmp/kula-smoke.log
           if grep -Eq 'SCRIPT ERROR|ERROR:' /tmp/kula-smoke.log; then exit 1; fi
       - name: Export debug APK
         run: |
