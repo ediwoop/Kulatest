@@ -1,11 +1,11 @@
-# Kula Native Prototype 0.5
+# Kula Native Prototype 0.6
 
 The default scene recreates LEVEL 1 from `/HIRO/HIRO.PAK`, index 0: 20 cells, the original start/heading, two bronze coins, a key, the first fruit (apple), the exit and its 99-second clock. Collecting everything gives 4,000 points.
 
 `tools/import_level1.py` derives the native subset from the repository's committed `public/map_data.json`, `public/objects.json` and `public/tex/HIRO.png`. It does not edit those generated sources or require the disc. The ball is the original Hiro model with vertex colours and normals, not a substitute bitmap skin. Keys, coins, the apple and the exit use the committed object meshes. Block faces use the Hiro atlas and its face shade/corner rules. Existing GPL licensing applies to reused code; extracted game data/artwork remains the rights holders' material, as documented in the repository root README.
 
-The desert, sky and pyramids are an independent procedural approximation. The original panorama is not available as a ready-to-use extracted asset here. This build does not claim pixel-identical rendering, a complete original HUD, original audio or the full campaign.
+The background now uses the Hiro panorama reconstruction published by KulaQuest Wiki, on a camera-centred sphere with 24 latitude bands and 48 longitude segments. Nearest sampling and affine UV interpolation reproduce the broad rendering technique. The procedural ground and pyramid meshes have been removed. Source and fidelity limits are recorded in `assets/HIRO-panorama-SOURCE.md`; this is a published WebP reconstruction, not a byte-verified TGI extraction. Original HUD, audio and a full campaign remain outside this build.
 
 The ball breathes at rest, keeps its body rotation between steps, stretches slightly in flight and squashes on landing with its contact side anchored. A fading soft shadow follows the supporting face. The touch controls, camera presets, timer pause, completion screen and local best time remain available. The 0.4 development signing key is preserved and verified during export.
 
-The automated native checks retain the original prototype fixture and also play the full imported first level, checking its layout, start, pickups, locked/open exit and score. OpenGL captures check the ball, textured blocks, scenery, jump and completion. Repository checks follow `CLAUDE.md`.
+The automated native checks retain the original prototype fixture and also play the full imported first level, checking its layout, start, pickups, locked/open exit and score. OpenGL captures check the ball, textured blocks, scenery, jump and completion, plus all four panorama directions and look-down. A native check verifies the 1,152-quad sphere and its translation without parallax. Repository checks follow `CLAUDE.md`.

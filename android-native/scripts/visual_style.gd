@@ -1,5 +1,6 @@
 extends RefCounted
 
+const SkyBackdrop = preload("res://scripts/sky_backdrop.gd")
 const ATLAS = preload("res://assets/HIRO.png")
 const NORMALS := [Vector3i(0,0,-1), Vector3i(1,0,0), Vector3i(0,1,0), Vector3i(0,-1,0), Vector3i(-1,0,0), Vector3i(0,0,1)]
 var data: Dictionary
@@ -101,58 +102,16 @@ func cube(original: Vector3i, occupied: Dictionary, objects: Array, portal_open:
 func _world(at: Vector3i) -> Vector3i:
     return Vector3i(at.x,-at.z,at.y)
 
-func environment(parent: Node3D) -> void:
+func environment(parent: Node3D) -> Node3D:
     var world := WorldEnvironment.new()
     world.environment = Environment.new()
-    world.environment.background_mode = Environment.BG_SKY
-    var sky := Sky.new()
-    var shader := Shader.new()
-    shader.code = "shader_type sky; void sky(){float y=EYEDIR.y; vec3 top=vec3(0.24,0.56,0.78); vec3 horizon=vec3(0.79,0.86,0.83); vec3 sand=vec3(0.77,0.58,0.32); float h=pow(1.0-clamp(y,0.0,1.0),3.0); vec3 color=mix(top,horizon,h); color=mix(color,sand,(1.0-smoothstep(-0.22,0.02,y))); float sun=pow(max(dot(EYEDIR,normalize(vec3(-0.5,0.35,-0.6))),0.0),400.0); color+=vec3(1.0,0.8,0.48)*sun*0.5; COLOR=color;}"
-    var material := ShaderMaterial.new()
-    material.shader = shader
-    sky.sky_material = material
-    world.environment.sky = sky
+    world.environment.background_mode = Environment.BG_COLOR
+    world.environment.background_color = Color.BLACK
     world.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
     world.environment.ambient_light_color = Color(0.94,0.84,0.66)
     world.environment.ambient_light_energy = 0.8
     parent.add_child(world)
-    var light := DirectionalLight3D.new()
-    light.rotation_degrees = Vector3(-45,-30,0)
-    light.light_color = Color(1,0.93,0.78)
-    light.light_energy = 0.8
-    parent.add_child(light)
-    var ground := MeshInstance3D.new()
-    var plane := PlaneMesh.new()
-    plane.size = Vector2(650,650)
-    ground.mesh = plane
-    ground.position = Vector3(18,-39,15)
-    var sand := StandardMaterial3D.new()
-    sand.albedo_color = Color(0.79,0.61,0.35)
-    sand.roughness = 1.0
-    ground.material_override = sand
-    parent.add_child(ground)
-    for info in [[-38, -40, 24], [48,-62,35], [105,-20,29], [-80,70,28], [12,105,37], [85,90,18]]:
-        _pyramid(parent,Vector3(info[0],-39,info[1]),float(info[2]))
-
-func _pyramid(parent: Node3D, center: Vector3, size: float) -> void:
-    var st := SurfaceTool.new()
-    st.begin(Mesh.PRIMITIVE_TRIANGLES)
-    var corners := [Vector3(-1,0,-1),Vector3(1,0,-1),Vector3(1,0,1),Vector3(-1,0,1)]
-    var colors := [Color(0.78,0.61,0.36),Color(0.92,0.75,0.46),Color(0.66,0.49,0.27),Color(0.85,0.66,0.39)]
-    for side in range(4):
-        var a: Vector3 = corners[side]*size
-        var b: Vector3 = corners[(side+1)%4]*size
-        var top := Vector3(0,size*1.35,0)
-        for v in [a,b,top]:
-            st.set_color(colors[side])
-            st.set_normal((top-a).cross(b-a).normalized())
-            st.add_vertex(v)
-    var material := StandardMaterial3D.new()
-    material.vertex_color_use_as_albedo = true
-    material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-    material.cull_mode = BaseMaterial3D.CULL_DISABLED
-    st.set_material(material)
-    var node := MeshInstance3D.new()
-    node.mesh = st.commit()
-    node.position = center
-    parent.add_child(node)
+    var backdrop = SkyBackdrop.new()
+    backdrop.name = "OriginalHiroBackdrop"
+    parent.add_child(backdrop)
+    return backdrop

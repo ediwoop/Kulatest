@@ -61,6 +61,7 @@ var in_air := false
 var shadow: MeshInstance3D
 var shadow_material: ShaderMaterial
 var start_normal := Vector3i.UP
+var backdrop
 
 func _ready() -> void:
     test_mode = "--self-test" in OS.get_cmdline_user_args() or "--visual-test" in OS.get_cmdline_user_args()
@@ -113,7 +114,7 @@ func _process(delta: float) -> void:
         _advance()
 
 func _make_environment() -> void:
-    style.environment(self)
+    backdrop = style.environment(self)
 
 func _load_level(path: String = LEVEL_PATH) -> void:
     var result: Dictionary = LevelLoader.from_json_file(path)
@@ -175,6 +176,8 @@ func _update_camera(delta: float) -> void:
     if not is_instance_valid(camera) or not is_instance_valid(ball):
         return
     follow_camera.update(camera, camera_anchor, view_frame, look_held, delta, occupied)
+    if is_instance_valid(backdrop):
+        backdrop.follow(camera)
 
 func _unhandled_key_input(event: InputEvent) -> void:
     if event.is_action_pressed("ui_up"):
@@ -458,6 +461,7 @@ func _run_self_test() -> void:
         await _run_route_test(failures)
         await _test_original_level(failures)
         _test_ball_visuals(failures)
+        _test_backdrop(failures)
     if failures.is_empty():
         print("SELF-TEST PASS: movement and edge transitions on 6 faces, turning, jump, fall/reset, wall, clearance and input guard")
         get_tree().quit(0)
@@ -681,6 +685,14 @@ func _run_visual_test() -> void:
     _restart()
     await _turn(1)
     await _capture("camera-scenery")
+    await _turn(1)
+    await _capture("camera-panorama-back")
+    await _turn(1)
+    await _capture("camera-panorama-left")
+    look_held = true
+    await get_tree().create_timer(0.4).timeout
+    await _capture("camera-panorama-look-down")
+    look_held = false
     print("VISUAL TEST PASS")
     get_tree().quit(0)
 
@@ -1086,3 +1098,21 @@ func _test_ball_visuals(failures: Array[String]) -> void:
     if height >= 1.0 or ball_mesh.basis.x.length()<=1.0 or abs(ball_mesh.position.y-BALL_RADIUS*height+BALL_RADIUS)>0.001:
         failures.append("Landing squash anchored to supporting face")
     print("BALL VISUAL TESTS: original vertex-colour skin, continuous roll and support-anchored landing squash")
+
+func _test_backdrop(failures: Array[String]) -> void:
+    if backdrop.sphere.mesh.get_surface_count()!=1 or backdrop.sphere.mesh.surface_get_array_len(0)!=24*48*6:
+        failures.append("Sky sphere uses 24 by 48 quads")
+    var initial_basis: Basis = backdrop.global_basis
+    var original_camera := camera.global_transform
+    for point in [Vector3.ZERO,Vector3(17,-17,18),Vector3(-10,9,4)]:
+        camera.global_position = point
+        backdrop.follow(camera)
+        if not backdrop.global_position.is_equal_approx(point) or not backdrop.global_basis.is_equal_approx(initial_basis):
+            failures.append("Sky follows translation without parallax or world rotation")
+    if backdrop.PANORAMA.get_width()!=768 or backdrop.PANORAMA.get_height()!=384:
+        failures.append("Hiro source panorama dimensions")
+    if backdrop._point(Vector2(0.0,0.5)).distance_to(backdrop._point(Vector2(1.0,0.5)))>0.001:
+        failures.append("Sky longitude seam closes")
+    camera.global_transform = original_camera
+    backdrop.follow(camera)
+    print("BACKDROP TESTS: source panorama, 1152 quads, closed sphere and camera-relative translation without parallax")
